@@ -1,15 +1,17 @@
 /**
- * Server-relayed table state. DM is authority; players poll state and post actions.
+ * Server-relayed table state. DM is authority; players poll / post actions.
  *
- * Storage layers (both always used when available):
- *  1. Process memory (globalThis) — fast; covers warm serverless + live preview
- *  2. SQL (Postgres when DATABASE_URL is set, else PGLite) — durable / cross-instance
+ * CRITICAL for Vercel: never initialize PGLite here. PGLite crashes in many
+ * serverless runtimes, which previously made every /api/table call return 500
+ * and left players stuck on "Connecting…".
  *
- * Multiplayer across different users on Vercel requires DATABASE_URL (shared Postgres).
- * Without it, rooms only exist inside the same warm server instance.
+ * Storage:
+ *  1. Process memory (always) — works in preview + warm instances
+ *  2. Postgres only when DATABASE_URL is set (shared across instances)
+ *
+ * Client also has a PeerJS fallback so multiplayer works even without Postgres.
  */
 import { z } from "zod";
-import { dbSource, getSql, type Sql } from "@/lib/db";
 
 const CODE = z.string().regex(/^[A-Z0-9]{4,12}$/);
 
@@ -24,16 +26,13 @@ type RoomRow = {
 type TableStore = {
   rooms: Map<string, RoomRow>;
   nextActionId: number;
-  schemaPromise?: Promise<void>;
+  schemaReady?: Promise<void>;
 };
 
 const g = globalThis as typeof globalThis & { __grimoireTableStore__?: TableStore };
 
 function store(): TableStore {
-  g.__grimoireTableStore__ ??= {
-    rooms: new Map(),
-    nextActionId: 1,
-  };
+  g.__grimoireTableStore__ ??= { rooms: new Map(), nextActionId: 1 };
   return g.__grimoireTableStore__;
 }
 
@@ -43,10 +42,15 @@ function json(body: unknown, status = 200): Response {
     headers: {
       "content-type": "application/json",
       "cache-control": "no-store, no-cache, must-revalidate",
-      // Help browsers / CDNs never cache table state
       pragma: "no-cache",
     },
   });
+}
+
+function hasDatabaseUrl(): boolean {
+  const raw =
+    typeof process !== "undefined" ? process.env.DATABASE_URL : undefined;
+  return Boolean(raw && raw.trim());
 }
 
 function memGet(code: string): RoomRow | undefined {
@@ -89,64 +93,71 @@ function memAck(code: string, upTo: number) {
   row.actions = row.actions.filter((a) => a.id > upTo);
 }
 
-async function ensureSchema(sql: Sql): Promise<void> {
-  const s = store();
-  s.schemaPromise ??= (async () => {
-    await sql.query(
-      `CREATE TABLE IF NOT EXISTS table_rooms (
-         code TEXT PRIMARY KEY,
-         state JSONB NOT NULL,
-         version INT NOT NULL DEFAULT 1,
-         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-       )`,
-    );
-    await sql.query(
-      `CREATE TABLE IF NOT EXISTS table_actions (
-         id BIGSERIAL PRIMARY KEY,
-         code TEXT NOT NULL,
-         payload JSONB NOT NULL,
-         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-       )`,
-    );
-    await sql.query(
-      `CREATE INDEX IF NOT EXISTS table_actions_inbox ON table_actions (code, id)`,
-    );
-  })().catch((err) => {
-    s.schemaPromise = undefined;
-    throw err;
-  });
-  return s.schemaPromise;
+type Sql = {
+  query: <T = Record<string, unknown>>(
+    text: string,
+    params?: unknown[],
+  ) => Promise<T[]>;
+};
+
+async function getSharedSql(): Promise<Sql | null> {
+  if (!hasDatabaseUrl()) return null;
+  try {
+    const { getSql } = await import("@/lib/db");
+    const sql = await getSql();
+    const s = store();
+    s.schemaReady ??= (async () => {
+      await sql.query(
+        `CREATE TABLE IF NOT EXISTS table_rooms (
+           code TEXT PRIMARY KEY,
+           state JSONB NOT NULL,
+           version INT NOT NULL DEFAULT 1,
+           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+         )`,
+      );
+      await sql.query(
+        `CREATE TABLE IF NOT EXISTS table_actions (
+           id BIGSERIAL PRIMARY KEY,
+           code TEXT NOT NULL,
+           payload JSONB NOT NULL,
+           created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+         )`,
+      );
+      await sql.query(
+        `CREATE INDEX IF NOT EXISTS table_actions_inbox ON table_actions (code, id)`,
+      );
+    })().catch((err) => {
+      s.schemaReady = undefined;
+      throw err;
+    });
+    await s.schemaReady;
+    return sql as unknown as Sql;
+  } catch (err) {
+    console.error("[table-relay] shared sql unavailable", err);
+    return null;
+  }
 }
 
 export async function handleTableRelay(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
 
-    // Lightweight health for the client (no auth, always public)
     if (request.method === "GET" && url.searchParams.get("health") === "1") {
       return json({
         ok: true,
-        db: dbSource,
-        multiplayer: dbSource === "neon" ? "shared" : "local",
+        db: hasDatabaseUrl() ? "postgres" : "memory",
+        multiplayer: hasDatabaseUrl() ? "shared" : "memory+peer",
         rooms: store().rooms.size,
       });
     }
 
-    let sql: Sql | null = null;
-    try {
-      sql = await getSql();
-      await ensureSchema(sql);
-    } catch (err) {
-      console.error("[table-relay] sql unavailable, using memory only", err);
-      sql = null;
-    }
+    const sql = await getSharedSql();
 
     if (request.method === "GET") {
       const code = (url.searchParams.get("code") ?? "").toUpperCase();
       const since = Number(url.searchParams.get("since") ?? "0");
       if (!CODE.safeParse(code).success) return json({ error: "invalid code" }, 400);
 
-      // Prefer memory (same instance), fall back to SQL (cross-instance)
       let version = 0;
       let state: unknown = null;
       let actions: { id: number; payload: unknown }[] = [];
@@ -172,10 +183,9 @@ export async function handleTableRelay(request: Request): Promise<Response> {
             `SELECT state, version FROM table_rooms WHERE code = $1`,
             [code],
           );
-          if (rows[0] && rows[0].version >= version) {
-            version = rows[0].version;
+          if (rows[0] && Number(rows[0].version) >= version) {
+            version = Number(rows[0].version);
             state = rows[0].state;
-            // keep memory warm for this instance
             if (state != null) memPut(code, state, version);
           }
           const actionRows = await sql.query<{ id: number; payload: unknown }>(
@@ -183,7 +193,6 @@ export async function handleTableRelay(request: Request): Promise<Response> {
             [code, since],
           );
           if (actionRows.length) {
-            // merge by id
             const byId = new Map<number, unknown>();
             for (const a of actions) byId.set(a.id, a.payload);
             for (const a of actionRows) byId.set(Number(a.id), a.payload);
@@ -201,7 +210,7 @@ export async function handleTableRelay(request: Request): Promise<Response> {
           state: null,
           version: 0,
           actions: [],
-          db: dbSource,
+          db: hasDatabaseUrl() ? "postgres" : "memory",
           exists: false,
         });
       }
@@ -211,7 +220,7 @@ export async function handleTableRelay(request: Request): Promise<Response> {
         state: sendState ? state : null,
         version,
         actions,
-        db: dbSource,
+        db: hasDatabaseUrl() ? "postgres" : "memory",
         exists: true,
       });
     }
@@ -226,9 +235,10 @@ export async function handleTableRelay(request: Request): Promise<Response> {
         const state = body.state;
         const version = Number(body.version ?? 1);
         if (!state || typeof state !== "object") return json({ error: "invalid state" }, 400);
-        if (JSON.stringify(state).length > 400_000) return json({ error: "state too large" }, 400);
+        if (JSON.stringify(state).length > 400_000) {
+          return json({ error: "state too large" }, 400);
+        }
 
-        // Always memory first so same-instance players connect immediately
         memPut(code, state, version);
 
         if (sql) {
@@ -244,11 +254,14 @@ export async function handleTableRelay(request: Request): Promise<Response> {
             );
           } catch (err) {
             console.error("[table-relay] sql put failed", err);
-            // memory already has it
           }
         }
 
-        return json({ ok: true, version, db: dbSource });
+        return json({
+          ok: true,
+          version,
+          db: hasDatabaseUrl() ? "postgres" : "memory",
+        });
       }
 
       if (op === "action") {
@@ -256,7 +269,9 @@ export async function handleTableRelay(request: Request): Promise<Response> {
         if (!CODE.safeParse(code).success) return json({ error: "invalid code" }, 400);
         const payload = body.payload;
         if (!payload) return json({ error: "missing payload" }, 400);
-        if (JSON.stringify(payload).length > 32_768) return json({ error: "payload too large" }, 400);
+        if (JSON.stringify(payload).length > 32_768) {
+          return json({ error: "payload too large" }, 400);
+        }
 
         const memA = memAction(code, payload);
 
@@ -281,10 +296,10 @@ export async function handleTableRelay(request: Request): Promise<Response> {
         memAck(code, upTo);
         if (sql) {
           try {
-            await sql.query(`DELETE FROM table_actions WHERE code = $1 AND id <= $2`, [
-              code,
-              upTo,
-            ]);
+            await sql.query(
+              `DELETE FROM table_actions WHERE code = $1 AND id <= $2`,
+              [code, upTo],
+            );
           } catch {
             /* ignore */
           }
@@ -298,6 +313,18 @@ export async function handleTableRelay(request: Request): Promise<Response> {
     return json({ error: "method not allowed" }, 405);
   } catch (error) {
     console.error("[table-relay]", error);
-    return json({ error: "table relay failed" }, 500);
+    // Never take down the table: empty success-shaped payload lets the PeerJS
+    // client path take over instead of infinite "Connecting…".
+    return json(
+      {
+        error: "table relay failed",
+        state: null,
+        version: 0,
+        actions: [],
+        exists: false,
+        db: "error",
+      },
+      200,
+    );
   }
 }

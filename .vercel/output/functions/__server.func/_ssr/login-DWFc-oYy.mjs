@@ -2,7 +2,7 @@ import { s as require_jsx_runtime } from "../_libs/@radix-ui/react-collection+[.
 import { t as Button } from "./button-C8CvZtyd.mjs";
 import { h as Link } from "../_libs/@tanstack/react-router+[...].mjs";
 import { n as signIn } from "./client-B0Lqc8Iq.mjs";
-import { G as BookMarked } from "../_libs/lucide-react.mjs";
+import { K as BookMarked } from "../_libs/lucide-react.mjs";
 import { a as CardTitle, i as CardHeader, n as CardContent, r as CardDescription, t as Card } from "./card-DtvtxkMq.mjs";
 import { t as GROK_PROVIDERS } from "./providers-B-AR6wJz.mjs";
 //#region node_modules/.nitro/vite/services/ssr/assets/login-DWFc-oYy.js

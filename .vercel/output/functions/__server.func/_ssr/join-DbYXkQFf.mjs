@@ -2,7 +2,7 @@ import { o as __toESM } from "../_runtime.mjs";
 import { c as require_react, s as require_jsx_runtime } from "../_libs/@radix-ui/react-collection+[...].mjs";
 import { t as Button } from "./button-C8CvZtyd.mjs";
 import { g as useNavigate, h as Link } from "../_libs/@tanstack/react-router+[...].mjs";
-import { G as BookMarked, W as BookOpen, i as Users } from "../_libs/lucide-react.mjs";
+import { G as BookOpen, K as BookMarked, i as Users } from "../_libs/lucide-react.mjs";
 import { a as CardTitle, i as CardHeader, n as CardContent, r as CardDescription, t as Card } from "./card-DtvtxkMq.mjs";
 import { t as Input } from "./input-AFaF5Jsv.mjs";
 import { r as useHomebrewStore } from "./homebrew-store-CISoxVrU.mjs";

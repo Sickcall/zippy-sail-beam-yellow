@@ -2,7 +2,7 @@ import { o as __toESM } from "../_runtime.mjs";
 import { c as require_react, s as require_jsx_runtime } from "../_libs/@radix-ui/react-collection+[...].mjs";
 import { t as Button } from "./button-C8CvZtyd.mjs";
 import { h as Link } from "../_libs/@tanstack/react-router+[...].mjs";
-import { B as Copy, L as Download, W as BookOpen, b as Plus, l as Trash2, s as Upload } from "../_libs/lucide-react.mjs";
+import { G as BookOpen, R as Download, V as Copy, b as Plus, l as Trash2, s as Upload } from "../_libs/lucide-react.mjs";
 import { t as AppShell } from "./app-shell-BQE9jRJg.mjs";
 import { t as Badge } from "./badge-DsIz5tIR.mjs";
 import { a as CardTitle, i as CardHeader, n as CardContent, r as CardDescription, t as Card } from "./card-DtvtxkMq.mjs";

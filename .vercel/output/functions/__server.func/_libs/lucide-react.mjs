@@ -488,6 +488,29 @@ var Library = createLucideIcon("library", [
 * This source code is licensed under the ISC license.
 * See the LICENSE file in the root directory of this source tree.
 */
+var Link2 = createLucideIcon("link-2", [
+	["path", {
+		d: "M9 17H7A5 5 0 0 1 7 7h2",
+		key: "8i5ue5"
+	}],
+	["path", {
+		d: "M15 7h2a5 5 0 1 1 0 10h-2",
+		key: "1b9ql8"
+	}],
+	["line", {
+		x1: "8",
+		x2: "16",
+		y1: "12",
+		y2: "12",
+		key: "1jonct"
+	}]
+]);
+/**
+* @license lucide-react v0.510.0 - ISC
+*
+* This source code is licensed under the ISC license.
+* See the LICENSE file in the root directory of this source tree.
+*/
 var Map = createLucideIcon("map", [
 	["path", {
 		d: "M14.106 5.553a2 2 0 0 0 1.788 0l3.659-1.83A1 1 0 0 1 21 4.619v12.764a1 1 0 0 1-.553.894l-4.553 2.277a2 2 0 0 1-1.788 0l-4.212-2.106a2 2 0 0 0-1.788 0l-3.659 1.83A1 1 0 0 1 3 19.381V6.618a1 1 0 0 1 .553-.894l4.553-2.277a2 2 0 0 1 1.788 0z",
@@ -1089,4 +1112,4 @@ var Zap = createLucideIcon("zap", [["path", {
 	key: "1xq2db"
 }]]);
 //#endregion
-export { Info as A, Copy as B, Package as C, Map as D, Menu as E, Eye as F, BookMarked as G, ChevronLeft as H, EyeOff as I, ArrowRight as K, Download as L, Heart as M, GitBranch as N, Library as O, Gift as P, Dices as R, PanelRightClose as S, MessageSquareQuote as T, Check as U, ChevronRight as V, BookOpen as W, ScrollText as _, User as a, Plus as b, TriangleAlert as c, Swords as d, StickyNote as f, Send as g, Settings2 as h, Users as i, Hexagon as j, LayoutGrid as k, Trash2 as l, Share2 as m, X as n, UserRound as o, Sparkles as p, ArrowLeft as q, Wrench as r, Upload as s, Zap as t, Target as u, Save as v, NotebookPen as w, PanelRightOpen as x, RotateCcw as y, Crosshair as z };
+export { LayoutGrid as A, Crosshair as B, Package as C, Map as D, Menu as E, Gift as F, BookOpen as G, ChevronRight as H, Eye as I, ArrowLeft as J, BookMarked as K, EyeOff as L, Hexagon as M, Heart as N, Link2 as O, GitBranch as P, Download as R, PanelRightClose as S, MessageSquareQuote as T, ChevronLeft as U, Copy as V, Check as W, ScrollText as _, User as a, Plus as b, TriangleAlert as c, Swords as d, StickyNote as f, Send as g, Settings2 as h, Users as i, Info as j, Library as k, Trash2 as l, Share2 as m, X as n, UserRound as o, Sparkles as p, ArrowRight as q, Wrench as r, Upload as s, Zap as t, Target as u, Save as v, NotebookPen as w, PanelRightOpen as x, RotateCcw as y, Dices as z };

@@ -14,6 +14,11 @@ import {
   rollDice,
 } from "./types";
 import { generateMap } from "@/lib/map/presets";
+import {
+  startDmPeerSync,
+  startPlayerPeerSync,
+  type PeerSyncHandle,
+} from "./peer-sync";
 
 function requireMap(preset: TableState["map"]["preset"]) {
   return generateMap(preset);
@@ -81,6 +86,8 @@ export function useTableSession(opts: {
   const actionCursor = useRef(0);
   const putting = useRef(false);
   const lastPutVersion = useRef(0);
+  const peerRef = useRef<PeerSyncHandle | null>(null);
+  const handleActionRef = useRef<(msg: WireMessage & { from?: string }) => void>(() => {});
 
   const publishState = useCallback(
     async (next: TableState) => {
@@ -103,6 +110,12 @@ export function useTableSession(opts: {
       } finally {
         putting.current = false;
       }
+      // Always fan-out over PeerJS so players work without shared DB
+      try {
+        peerRef.current?.broadcastState(next);
+      } catch {
+        /* ignore */
+      }
     },
     [code, isDm],
   );
@@ -124,15 +137,25 @@ export function useTableSession(opts: {
 
   const postAction = useCallback(
     async (payload: WireMessage) => {
-      await fetch("/api/table", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          op: "action",
-          code,
-          payload: { ...payload, from: selfId },
-        }),
-      });
+      const full = { ...payload, from: selfId };
+      try {
+        peerRef.current?.sendAction(full);
+      } catch {
+        /* ignore */
+      }
+      try {
+        await fetch("/api/table", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            op: "action",
+            code,
+            payload: full,
+          }),
+        });
+      } catch {
+        /* peer path may still work */
+      }
     },
     [code, selfId],
   );
@@ -287,6 +310,62 @@ export function useTableSession(opts: {
     },
     [isDm, applyAsDm, publishState],
   );
+  handleActionRef.current = handleAction;
+
+  // PeerJS path — works on Vercel even when serverless DB is unavailable
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    if (isDm) {
+      const handle = startDmPeerSync({
+        code,
+        getState: () => stateRef.current,
+        onAction: (payload) => {
+          handleActionRef.current(payload);
+          // if player asked for state, push
+          if (payload.t === "request-state" || payload.t === "hello") {
+            try {
+              peerRef.current?.broadcastState(stateRef.current);
+            } catch {
+              /* ignore */
+            }
+          }
+        },
+      });
+      peerRef.current = handle;
+      return () => {
+        handle.destroy();
+        if (peerRef.current === handle) peerRef.current = null;
+      };
+    }
+
+    const handle = startPlayerPeerSync({
+      code,
+      selfId,
+      displayName: opts.displayName,
+      onState: (raw) => {
+        const next = normalizeTableState(raw);
+        setState(next);
+        stateRef.current = next;
+        readyRef.current = true;
+        setReady(true);
+        setWaitingHint(false);
+        setSyncStatus("ok");
+      },
+      onStatus: (s) => {
+        if (s === "error" || s === "connecting") {
+          if (!readyRef.current) setWaitingHint(true);
+        }
+      },
+    });
+    peerRef.current = handle;
+    return () => {
+      handle.destroy();
+      if (peerRef.current === handle) peerRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code, isDm, selfId]);
+
 
   // Poll loop (+ DM re-publish heartbeat so late joiners always find the room)
   useEffect(() => {

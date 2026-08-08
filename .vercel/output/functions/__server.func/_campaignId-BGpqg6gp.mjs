@@ -2,7 +2,7 @@ import { s as require_jsx_runtime } from "./_libs/@radix-ui/react-collection+[..
 import { t as Button } from "./_ssr/button-C8CvZtyd.mjs";
 import { A as notFound, h as Link } from "./_libs/@tanstack/react-router+[...].mjs";
 import { t as Route } from "./_campaignId-DhYJMMbZ.mjs";
-import { K as ArrowRight, W as BookOpen, q as ArrowLeft } from "./_libs/lucide-react.mjs";
+import { G as BookOpen, J as ArrowLeft, q as ArrowRight } from "./_libs/lucide-react.mjs";
 import { t as AppShell } from "./_ssr/app-shell-BQE9jRJg.mjs";
 import { t as Badge } from "./_ssr/badge-DsIz5tIR.mjs";
 import { a as CardTitle, i as CardHeader, n as CardContent, r as CardDescription, t as Card } from "./_ssr/card-DtvtxkMq.mjs";
