@@ -1,9 +1,11 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import {
   BookOpen,
+  Copy,
   Eye,
   EyeOff,
   LayoutGrid,
+  Link2,
   Map as MapIcon,
   Plus,
   ScrollText,
@@ -149,42 +151,101 @@ function TablePage() {
     }
   }, [privateNotes, code, role]);
 
+  const tableCode = code.toUpperCase();
+  const inviteUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/join?code=${tableCode}`
+      : `/join?code=${tableCode}`;
+
   async function copyInvite() {
-    const tableCode = code.toUpperCase();
-    const url = `${window.location.origin}/join?code=${tableCode}`;
     const message = [
       `Join my D&D table on Grimoire — no account needed.`,
       ``,
-      `Open this link: ${url}`,
-      `Or go to the site and enter code: ${tableCode}`,
+      `Open this link: ${inviteUrl}`,
+      `Or open Grimoire → Table → enter code: ${tableCode}`,
     ].join("\n");
     try {
       await navigator.clipboard.writeText(message);
-      toast.success("Player invite copied — paste in Discord, text, etc.");
+      toast.success("Invite copied — paste it to your players");
     } catch {
       try {
-        await navigator.clipboard.writeText(url);
+        await navigator.clipboard.writeText(inviteUrl);
         toast.success("Invite link copied");
       } catch {
-        toast.message(url);
+        toast.message(inviteUrl);
       }
     }
   }
 
+  async function copyCodeOnly() {
+    try {
+      await navigator.clipboard.writeText(tableCode);
+      toast.success(`Code ${tableCode} copied`);
+    } catch {
+      toast.message(tableCode);
+    }
+  }
+
+  async function copyLinkOnly() {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      toast.success("Join link copied");
+    } catch {
+      toast.message(inviteUrl);
+    }
+  }
+
+  // One-time tip for DM after table is live
+  useEffect(() => {
+    if (role !== "dm" || !session.joined) return;
+    const key = `grimoire-share-tip-${tableCode}`;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+    } catch {
+      /* ignore */
+    }
+    toast.message("Table is live — use Invite to send players the link + code", {
+      duration: 6000,
+    });
+  }, [role, session.joined, tableCode]);
+
   if (!session.joined || (!session.ready && role === "player")) {
     return (
       <div className="grid min-h-dvh place-items-center bg-[var(--color-bg)] px-4">
-        <div className="w-full max-w-sm text-center">
+        <div className="w-full max-w-md rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-6 text-center shadow-[var(--shadow-panel)]">
           <div className="mx-auto mb-4 size-10 animate-pulse rounded-full bg-[var(--color-bg-subtle)]" />
-          <p className="font-display text-lg font-semibold">Connecting to table…</p>
-          <p className="mt-1 text-sm text-[var(--color-fg-muted)]">
+          <p className="font-display text-lg font-semibold">
+            {role === "player" ? "Looking for the table…" : "Opening your table…"}
+          </p>
+          <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
             {role === "player"
-              ? "Waiting for the DM to share the table."
-              : "Opening your DM channel."}
+              ? session.waitingHint
+                ? "No live table yet for this code. Ask your DM to open the table first, then click Invite and send you the link."
+                : "Connecting to the DM’s table…"
+              : "Starting the DM channel."}
           </p>
-          <p className="mt-4 font-mono text-xs tracking-widest text-[var(--color-steel)]">
-            {code.toUpperCase()}
+          <p className="mt-4 font-mono text-lg tracking-[0.35em] text-[var(--color-steel)]">
+            {tableCode}
           </p>
+          {role === "player" && (
+            <div className="mt-5 space-y-2 text-left text-xs text-[var(--color-fg-subtle)]">
+              <p className="font-medium text-[var(--color-fg-muted)]">What your DM should do</p>
+              <ol className="list-decimal space-y-1 pl-4">
+                <li>Open Grimoire and choose <strong>Host / Create table</strong> (as DM).</li>
+                <li>Click <strong>Invite</strong> in the header.</li>
+                <li>Send you the link or the same code shown above.</li>
+              </ol>
+              <p className="pt-2">
+                Stay on this page — it joins automatically once the table is live.
+              </p>
+              <div className="flex flex-wrap justify-center gap-2 pt-3">
+                <Button type="button" size="sm" variant="secondary" asChild>
+                  <Link to="/join">Back to join</Link>
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -223,12 +284,51 @@ function TablePage() {
               code={code.toUpperCase()}
             />
           </div>
-          <Button type="button" size="sm" variant="secondary" onClick={copyInvite}>
+          <Button type="button" size="sm" variant="steel" onClick={copyInvite}>
             <Share2 className="size-3.5" />
-            Invite
+            Invite players
           </Button>
         </div>
       </header>
+
+      {role === "dm" && (
+        <div className="border-b border-[var(--color-border)] bg-[color-mix(in_oklab,var(--color-steel)_8%,var(--color-bg-elevated))]">
+          <div className="mx-auto flex max-w-[1600px] flex-col gap-2 px-3 py-3 sm:flex-row sm:items-center sm:gap-4 sm:px-4">
+            <div className="flex min-w-0 flex-1 items-start gap-2">
+              <Link2 className="mt-0.5 size-4 shrink-0 text-[var(--color-steel)]" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-[var(--color-fg)]">
+                  Share with players — no account needed
+                </p>
+                <p className="mt-0.5 break-all font-mono text-xs text-[var(--color-fg-muted)]">
+                  {inviteUrl}
+                </p>
+                <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
+                  Table code{" "}
+                  <span className="font-mono tracking-widest text-[var(--color-steel)]">
+                    {tableCode}
+                  </span>
+                  {" · "}
+                  Keep this tab open while they join
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" size="sm" variant="steel" onClick={copyInvite}>
+                <Share2 className="size-3.5" />
+                Copy invite
+              </Button>
+              <Button type="button" size="sm" variant="secondary" onClick={copyLinkOnly}>
+                <Copy className="size-3.5" />
+                Link only
+              </Button>
+              <Button type="button" size="sm" variant="secondary" onClick={copyCodeOnly}>
+                Code only
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="mx-auto grid w-full max-w-[1600px] flex-1 gap-0 lg:grid-cols-[1fr_340px]">
         <div className="min-w-0 border-b border-[var(--color-border)] lg:border-b-0 lg:border-r">

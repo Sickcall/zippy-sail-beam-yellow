@@ -76,8 +76,11 @@ export async function handleTableRelay(request: Request): Promise<Response> {
         [code, since],
       );
 
+      // since=0 → always full snapshot (player first join).
+      // Otherwise send state only when version advanced.
+      const sendState = since === 0 || rows[0].version > since;
       return json({
-        state: rows[0].version > since || since === 0 ? rows[0].state : null,
+        state: sendState ? rows[0].state : null,
         version: rows[0].version,
         actions: actions.map((a) => ({ id: a.id, payload: a.payload })),
       });

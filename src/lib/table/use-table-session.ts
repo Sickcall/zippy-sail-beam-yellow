@@ -71,8 +71,11 @@ export function useTableSession(opts: {
   });
   const [ready, setReady] = useState(isDm);
   const [joined, setJoined] = useState(false);
+  const [waitingHint, setWaitingHint] = useState(false);
   const stateRef = useRef(state);
   stateRef.current = state;
+  const readyRef = useRef(isDm);
+  readyRef.current = ready;
   const actionCursor = useRef(0);
   const putting = useRef(false);
   const lastPutVersion = useRef(0);
@@ -289,7 +292,13 @@ export function useTableSession(opts: {
     const tick = async () => {
       if (cancelled) return;
       try {
-        const since = isDm ? actionCursor.current : stateRef.current.version;
+        // Players must use since=0 until first full state arrives, otherwise a
+        // local default version can hide an existing room forever.
+        const since = isDm
+          ? actionCursor.current
+          : readyRef.current
+            ? stateRef.current.version
+            : 0;
         const res = await fetch(
           `/api/table?code=${encodeURIComponent(code)}&since=${since}`,
         );
@@ -300,11 +309,17 @@ export function useTableSession(opts: {
             actions: RelayAction[];
           };
 
-          if (!isDm && body.state && body.version >= stateRef.current.version) {
-            const next = normalizeTableState(body.state);
-            setState(next);
-            stateRef.current = next;
-            setReady(true);
+          if (!isDm) {
+            if (body.state && typeof body.version === "number" && body.version > 0) {
+              const next = normalizeTableState(body.state);
+              setState(next);
+              stateRef.current = next;
+              readyRef.current = true;
+              setReady(true);
+              setWaitingHint(false);
+            } else if (!readyRef.current) {
+              setWaitingHint(true);
+            }
           }
 
           if (isDm && body.actions?.length) {
@@ -466,6 +481,7 @@ export function useTableSession(opts: {
     peers,
     joined,
     ready,
+    waitingHint,
     syncError: null as string | null,
     isDm,
     state,
