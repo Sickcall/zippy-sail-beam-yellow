@@ -72,6 +72,8 @@ export function useTableSession(opts: {
   const [ready, setReady] = useState(isDm);
   const [joined, setJoined] = useState(false);
   const [waitingHint, setWaitingHint] = useState(false);
+  /** none | ok | blocked | missing */
+  const [syncStatus, setSyncStatus] = useState<"none" | "ok" | "blocked" | "missing">("none");
   const stateRef = useRef(state);
   stateRef.current = state;
   const readyRef = useRef(isDm);
@@ -83,17 +85,19 @@ export function useTableSession(opts: {
   const publishState = useCallback(
     async (next: TableState) => {
       if (!isDm) return;
-      if (putting.current) {
-        // latest wins via lastPutVersion check below
-      }
       putting.current = true;
       try {
-        await fetch("/api/table", {
+        const res = await fetch("/api/table", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ op: "put", code, state: next, version: next.version }),
         });
-        lastPutVersion.current = next.version;
+        if (res.status === 401 || res.status === 403) {
+          setSyncStatus("blocked");
+        } else if (res.ok) {
+          lastPutVersion.current = next.version;
+          setSyncStatus("ok");
+        }
       } catch {
         // retry on next change
       } finally {
@@ -284,16 +288,17 @@ export function useTableSession(opts: {
     [isDm, applyAsDm, publishState],
   );
 
-  // Poll loop
+  // Poll loop (+ DM re-publish heartbeat so late joiners always find the room)
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    let beats = 0;
 
     const tick = async () => {
       if (cancelled) return;
+      beats += 1;
       try {
-        // Players must use since=0 until first full state arrives, otherwise a
-        // local default version can hide an existing room forever.
+        // Players must use since=0 until first full state arrives.
         const since = isDm
           ? actionCursor.current
           : readyRef.current
@@ -301,12 +306,17 @@ export function useTableSession(opts: {
             : 0;
         const res = await fetch(
           `/api/table?code=${encodeURIComponent(code)}&since=${since}`,
+          { cache: "no-store" },
         );
-        if (res.ok) {
+
+        if (res.status === 401 || res.status === 403) {
+          setSyncStatus("blocked");
+        } else if (res.ok) {
           const body = (await res.json()) as {
             state: TableState | null;
             version: number;
             actions: RelayAction[];
+            exists?: boolean;
           };
 
           if (!isDm) {
@@ -317,28 +327,45 @@ export function useTableSession(opts: {
               readyRef.current = true;
               setReady(true);
               setWaitingHint(false);
+              setSyncStatus("ok");
             } else if (!readyRef.current) {
               setWaitingHint(true);
+              setSyncStatus(body.exists === false ? "missing" : "missing");
+              // Keep asking DM to re-share state
+              if (beats % 3 === 0) {
+                void postAction({ t: "request-state" });
+                void postAction({
+                  t: "hello",
+                  role: "player",
+                  name: opts.displayName,
+                  peerId: selfId,
+                });
+              }
             }
           }
 
-          if (isDm && body.actions?.length) {
-            let maxId = actionCursor.current;
-            for (const a of body.actions) {
-              maxId = Math.max(maxId, a.id);
-              handleAction(a.payload as WireMessage & { from?: string });
+          if (isDm) {
+            setSyncStatus("ok");
+            // Heartbeat: re-put full state every ~2s so any warm instance + SQL stay current
+            if (beats % 3 === 0) {
+              void publishState(stateRef.current);
             }
-            actionCursor.current = maxId;
-            // ack
-            void fetch("/api/table", {
-              method: "POST",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ op: "ack", code, upTo: maxId }),
-            });
+            if (body.actions?.length) {
+              let maxId = actionCursor.current;
+              for (const a of body.actions) {
+                maxId = Math.max(maxId, a.id);
+                handleAction(a.payload as WireMessage & { from?: string });
+              }
+              actionCursor.current = maxId;
+              void fetch("/api/table", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ op: "ack", code, upTo: maxId }),
+              });
+            }
           }
 
-          // player heartbeat / re-hello occasionally
-          if (!isDm && Math.random() < 0.05) {
+          if (!isDm && readyRef.current && beats % 8 === 0) {
             void postAction({
               t: "hello",
               role: "player",
@@ -350,15 +377,17 @@ export function useTableSession(opts: {
       } catch {
         // ignore transient
       }
-      if (!cancelled) timer = setTimeout(tick, isDm ? 600 : 700);
+      // Players poll faster while waiting to join
+      const delay = isDm ? 700 : readyRef.current ? 800 : 400;
+      if (!cancelled) timer = setTimeout(tick, delay);
     };
 
-    timer = setTimeout(tick, 200);
+    timer = setTimeout(tick, 100);
     return () => {
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [code, isDm, handleAction, postAction, opts.displayName, selfId]);
+  }, [code, isDm, handleAction, postAction, publishState, opts.displayName, selfId]);
 
   const updateSheet = useCallback(
     (sheet: CharacterSheet) => {
@@ -482,6 +511,7 @@ export function useTableSession(opts: {
     joined,
     ready,
     waitingHint,
+    syncStatus,
     syncError: null as string | null,
     isDm,
     state,

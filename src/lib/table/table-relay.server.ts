@@ -1,18 +1,97 @@
 /**
  * Server-relayed table state. DM is authority; players poll state and post actions.
- * Works in preview (PGLite) and production (Postgres) without WebRTC NAT issues.
+ *
+ * Storage layers (both always used when available):
+ *  1. Process memory (globalThis) — fast; covers warm serverless + live preview
+ *  2. SQL (Postgres when DATABASE_URL is set, else PGLite) — durable / cross-instance
+ *
+ * Multiplayer across different users on Vercel requires DATABASE_URL (shared Postgres).
+ * Without it, rooms only exist inside the same warm server instance.
  */
 import { z } from "zod";
-import { getSql, type Sql } from "@/lib/db";
+import { dbSource, getSql, type Sql } from "@/lib/db";
 
 const CODE = z.string().regex(/^[A-Z0-9]{4,12}$/);
 
-const globalRef = globalThis as typeof globalThis & {
-  __tableSchemaPromise__?: Promise<void>;
+type ActionRow = { id: number; payload: unknown; createdAt: number };
+type RoomRow = {
+  state: unknown;
+  version: number;
+  actions: ActionRow[];
+  updatedAt: number;
 };
 
-function ensureSchema(sql: Sql): Promise<void> {
-  globalRef.__tableSchemaPromise__ ??= (async () => {
+type TableStore = {
+  rooms: Map<string, RoomRow>;
+  nextActionId: number;
+  schemaPromise?: Promise<void>;
+};
+
+const g = globalThis as typeof globalThis & { __grimoireTableStore__?: TableStore };
+
+function store(): TableStore {
+  g.__grimoireTableStore__ ??= {
+    rooms: new Map(),
+    nextActionId: 1,
+  };
+  return g.__grimoireTableStore__;
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store, no-cache, must-revalidate",
+      // Help browsers / CDNs never cache table state
+      pragma: "no-cache",
+    },
+  });
+}
+
+function memGet(code: string): RoomRow | undefined {
+  return store().rooms.get(code);
+}
+
+function memPut(code: string, state: unknown, version: number): RoomRow {
+  const s = store();
+  const prev = s.rooms.get(code);
+  const row: RoomRow = {
+    state,
+    version,
+    actions: prev?.actions ?? [],
+    updatedAt: Date.now(),
+  };
+  s.rooms.set(code, row);
+  return row;
+}
+
+function memAction(code: string, payload: unknown): ActionRow {
+  const s = store();
+  let row = s.rooms.get(code);
+  if (!row) {
+    row = { state: null, version: 0, actions: [], updatedAt: Date.now() };
+    s.rooms.set(code, row);
+  }
+  const action: ActionRow = {
+    id: s.nextActionId++,
+    payload,
+    createdAt: Date.now(),
+  };
+  row.actions = [...row.actions, action].slice(-200);
+  row.updatedAt = Date.now();
+  return action;
+}
+
+function memAck(code: string, upTo: number) {
+  const row = store().rooms.get(code);
+  if (!row) return;
+  row.actions = row.actions.filter((a) => a.id > upTo);
+}
+
+async function ensureSchema(sql: Sql): Promise<void> {
+  const s = store();
+  s.schemaPromise ??= (async () => {
     await sql.query(
       `CREATE TABLE IF NOT EXISTS table_rooms (
          code TEXT PRIMARY KEY,
@@ -33,56 +112,107 @@ function ensureSchema(sql: Sql): Promise<void> {
       `CREATE INDEX IF NOT EXISTS table_actions_inbox ON table_actions (code, id)`,
     );
   })().catch((err) => {
-    globalRef.__tableSchemaPromise__ = undefined;
+    s.schemaPromise = undefined;
     throw err;
   });
-  return globalRef.__tableSchemaPromise__;
-}
-
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
-  });
+  return s.schemaPromise;
 }
 
 export async function handleTableRelay(request: Request): Promise<Response> {
   try {
     const url = new URL(request.url);
-    const sql = await getSql();
-    await ensureSchema(sql);
+
+    // Lightweight health for the client (no auth, always public)
+    if (request.method === "GET" && url.searchParams.get("health") === "1") {
+      return json({
+        ok: true,
+        db: dbSource,
+        multiplayer: dbSource === "neon" ? "shared" : "local",
+        rooms: store().rooms.size,
+      });
+    }
+
+    let sql: Sql | null = null;
+    try {
+      sql = await getSql();
+      await ensureSchema(sql);
+    } catch (err) {
+      console.error("[table-relay] sql unavailable, using memory only", err);
+      sql = null;
+    }
 
     if (request.method === "GET") {
       const code = (url.searchParams.get("code") ?? "").toUpperCase();
       const since = Number(url.searchParams.get("since") ?? "0");
-      const parsed = CODE.safeParse(code);
-      if (!parsed.success) return json({ error: "invalid code" }, 400);
+      if (!CODE.safeParse(code).success) return json({ error: "invalid code" }, 400);
 
-      // prune old actions
-      if (Math.random() < 0.05) {
-        await sql.query(
-          `DELETE FROM table_actions WHERE created_at < now() - interval '10 minutes'`,
-        );
+      // Prefer memory (same instance), fall back to SQL (cross-instance)
+      let version = 0;
+      let state: unknown = null;
+      let actions: { id: number; payload: unknown }[] = [];
+
+      const mem = memGet(code);
+      if (mem && mem.version > 0 && mem.state != null) {
+        version = mem.version;
+        state = mem.state;
+        actions = mem.actions
+          .filter((a) => a.id > since)
+          .slice(0, 100)
+          .map((a) => ({ id: a.id, payload: a.payload }));
       }
 
-      const rows = await sql.query<{ state: unknown; version: number }>(
-        `SELECT state, version FROM table_rooms WHERE code = $1`,
-        [code],
-      );
-      if (!rows[0]) return json({ state: null, version: 0, actions: [] });
+      if (sql) {
+        try {
+          if (Math.random() < 0.05) {
+            await sql.query(
+              `DELETE FROM table_actions WHERE created_at < now() - interval '30 minutes'`,
+            );
+          }
+          const rows = await sql.query<{ state: unknown; version: number }>(
+            `SELECT state, version FROM table_rooms WHERE code = $1`,
+            [code],
+          );
+          if (rows[0] && rows[0].version >= version) {
+            version = rows[0].version;
+            state = rows[0].state;
+            // keep memory warm for this instance
+            if (state != null) memPut(code, state, version);
+          }
+          const actionRows = await sql.query<{ id: number; payload: unknown }>(
+            `SELECT id, payload FROM table_actions WHERE code = $1 AND id > $2 ORDER BY id LIMIT 100`,
+            [code, since],
+          );
+          if (actionRows.length) {
+            // merge by id
+            const byId = new Map<number, unknown>();
+            for (const a of actions) byId.set(a.id, a.payload);
+            for (const a of actionRows) byId.set(Number(a.id), a.payload);
+            actions = [...byId.entries()]
+              .sort((a, b) => a[0] - b[0])
+              .map(([id, payload]) => ({ id, payload }));
+          }
+        } catch (err) {
+          console.error("[table-relay] sql read failed", err);
+        }
+      }
 
-      const actions = await sql.query<{ id: number; payload: unknown }>(
-        `SELECT id, payload FROM table_actions WHERE code = $1 AND id > $2 ORDER BY id LIMIT 100`,
-        [code, since],
-      );
+      if (!state || version === 0) {
+        return json({
+          state: null,
+          version: 0,
+          actions: [],
+          db: dbSource,
+          exists: false,
+        });
+      }
 
-      // since=0 → always full snapshot (player first join).
-      // Otherwise send state only when version advanced.
-      const sendState = since === 0 || rows[0].version > since;
+      const sendState = since === 0 || version > since;
       return json({
-        state: sendState ? rows[0].state : null,
-        version: rows[0].version,
-        actions: actions.map((a) => ({ id: a.id, payload: a.payload })),
+        state: sendState ? state : null,
+        version,
+        actions,
+        db: dbSource,
+        exists: true,
       });
     }
 
@@ -96,19 +226,29 @@ export async function handleTableRelay(request: Request): Promise<Response> {
         const state = body.state;
         const version = Number(body.version ?? 1);
         if (!state || typeof state !== "object") return json({ error: "invalid state" }, 400);
-        // size guard
         if (JSON.stringify(state).length > 400_000) return json({ error: "state too large" }, 400);
 
-        await sql.query(
-          `INSERT INTO table_rooms (code, state, version, updated_at)
-           VALUES ($1, $2::jsonb, $3, now())
-           ON CONFLICT (code) DO UPDATE SET
-             state = EXCLUDED.state,
-             version = EXCLUDED.version,
-             updated_at = now()`,
-          [code, JSON.stringify(state), version],
-        );
-        return json({ ok: true, version });
+        // Always memory first so same-instance players connect immediately
+        memPut(code, state, version);
+
+        if (sql) {
+          try {
+            await sql.query(
+              `INSERT INTO table_rooms (code, state, version, updated_at)
+               VALUES ($1, $2::jsonb, $3, now())
+               ON CONFLICT (code) DO UPDATE SET
+                 state = EXCLUDED.state,
+                 version = EXCLUDED.version,
+                 updated_at = now()`,
+              [code, JSON.stringify(state), version],
+            );
+          } catch (err) {
+            console.error("[table-relay] sql put failed", err);
+            // memory already has it
+          }
+        }
+
+        return json({ ok: true, version, db: dbSource });
       }
 
       if (op === "action") {
@@ -117,18 +257,38 @@ export async function handleTableRelay(request: Request): Promise<Response> {
         const payload = body.payload;
         if (!payload) return json({ error: "missing payload" }, 400);
         if (JSON.stringify(payload).length > 32_768) return json({ error: "payload too large" }, 400);
-        await sql.query(
-          `INSERT INTO table_actions (code, payload) VALUES ($1, $2::jsonb)`,
-          [code, JSON.stringify(payload)],
-        );
-        return json({ ok: true });
+
+        const memA = memAction(code, payload);
+
+        if (sql) {
+          try {
+            await sql.query(
+              `INSERT INTO table_actions (code, payload) VALUES ($1, $2::jsonb)`,
+              [code, JSON.stringify(payload)],
+            );
+          } catch (err) {
+            console.error("[table-relay] sql action failed", err);
+          }
+        }
+
+        return json({ ok: true, id: memA.id });
       }
 
       if (op === "ack") {
         const code = String(body.code ?? "").toUpperCase();
         const upTo = Number(body.upTo ?? 0);
         if (!CODE.safeParse(code).success) return json({ error: "invalid code" }, 400);
-        await sql.query(`DELETE FROM table_actions WHERE code = $1 AND id <= $2`, [code, upTo]);
+        memAck(code, upTo);
+        if (sql) {
+          try {
+            await sql.query(`DELETE FROM table_actions WHERE code = $1 AND id <= $2`, [
+              code,
+              upTo,
+            ]);
+          } catch {
+            /* ignore */
+          }
+        }
         return json({ ok: true });
       }
 

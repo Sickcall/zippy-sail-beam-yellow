@@ -211,37 +211,68 @@ function TablePage() {
   }, [role, session.joined, tableCode]);
 
   if (!session.joined || (!session.ready && role === "player")) {
+    const blocked = session.syncStatus === "blocked";
     return (
       <div className="grid min-h-dvh place-items-center bg-[var(--color-bg)] px-4">
         <div className="w-full max-w-md rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-bg-elevated)] p-6 text-center shadow-[var(--shadow-panel)]">
           <div className="mx-auto mb-4 size-10 animate-pulse rounded-full bg-[var(--color-bg-subtle)]" />
           <p className="font-display text-lg font-semibold">
-            {role === "player" ? "Looking for the table…" : "Opening your table…"}
+            {blocked
+              ? "Site login is blocking the table"
+              : role === "player"
+                ? "Looking for the table…"
+                : "Opening your table…"}
           </p>
           <p className="mt-2 text-sm text-[var(--color-fg-muted)]">
-            {role === "player"
-              ? session.waitingHint
-                ? "No live table yet for this code. Ask your DM to open the table first, then click Invite and send you the link."
-                : "Connecting to the DM’s table…"
-              : "Starting the DM channel."}
+            {blocked
+              ? "This deployment requires a Vercel login. The host must turn off Deployment Protection so anyone can open the link."
+              : role === "player"
+                ? session.waitingHint
+                  ? "No live table for this code yet. Your DM must Create table first, keep that tab open, then send Invite."
+                  : "Connecting to the DM’s table…"
+                : "Starting the DM channel."}
           </p>
           <p className="mt-4 font-mono text-lg tracking-[0.35em] text-[var(--color-steel)]">
             {tableCode}
           </p>
           {role === "player" && (
-            <div className="mt-5 space-y-2 text-left text-xs text-[var(--color-fg-subtle)]">
-              <p className="font-medium text-[var(--color-fg-muted)]">What your DM should do</p>
-              <ol className="list-decimal space-y-1 pl-4">
-                <li>Open Grimoire and choose <strong>Host / Create table</strong> (as DM).</li>
-                <li>Click <strong>Invite</strong> in the header.</li>
-                <li>Send you the link or the same code shown above.</li>
-              </ol>
-              <p className="pt-2">
-                Stay on this page — it joins automatically once the table is live.
-              </p>
-              <div className="flex flex-wrap justify-center gap-2 pt-3">
+            <div className="mt-5 space-y-3 text-left text-xs text-[var(--color-fg-subtle)]">
+              {blocked ? (
+                <div className="rounded-[var(--radius-sm)] border border-[var(--color-warn)]/40 bg-[color-mix(in_oklab,var(--color-warn)_10%,transparent)] p-3 text-[var(--color-fg-muted)]">
+                  <p className="font-medium text-[var(--color-fg)]">Tell your DM</p>
+                  <ol className="mt-1 list-decimal space-y-1 pl-4">
+                    <li>Open the Vercel project for this app.</li>
+                    <li>Settings → Deployment Protection → set to <strong>None</strong> (or only protect Previews).</li>
+                    <li>Use the <strong>Production</strong> URL, not a protected Preview URL.</li>
+                    <li>Re-send Invite after saving.</li>
+                  </ol>
+                </div>
+              ) : (
+                <>
+                  <p className="font-medium text-[var(--color-fg-muted)]">Checklist</p>
+                  <ol className="list-decimal space-y-1 pl-4">
+                    <li>DM opens Grimoire → <strong>Create table</strong> (same site as this link).</li>
+                    <li>DM clicks <strong>Invite players</strong> and pastes you that message.</li>
+                    <li>You open <strong>their</strong> link (not a different copy of the app).</li>
+                    <li>DM leaves their table tab open.</li>
+                  </ol>
+                  <p className="pt-1">
+                    Stay here — you join automatically when the table is live. If you were asked to
+                    “Sign in to Vercel”, that is a host settings issue (see above), not a Grimoire account.
+                  </p>
+                </>
+              )}
+              <div className="flex flex-wrap justify-center gap-2 pt-2">
                 <Button type="button" size="sm" variant="secondary" asChild>
                   <Link to="/join">Back to join</Link>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="steel"
+                  onClick={() => window.location.reload()}
+                >
+                  Retry
                 </Button>
               </div>
             </div>
@@ -298,18 +329,18 @@ function TablePage() {
               <Link2 className="mt-0.5 size-4 shrink-0 text-[var(--color-steel)]" />
               <div className="min-w-0">
                 <p className="text-sm font-medium text-[var(--color-fg)]">
-                  Share with players — no account needed
+                  Share this exact link — players need no account
                 </p>
                 <p className="mt-0.5 break-all font-mono text-xs text-[var(--color-fg-muted)]">
                   {inviteUrl}
                 </p>
                 <p className="mt-1 text-xs text-[var(--color-fg-subtle)]">
-                  Table code{" "}
+                  Code{" "}
                   <span className="font-mono tracking-widest text-[var(--color-steel)]">
                     {tableCode}
                   </span>
                   {" · "}
-                  Keep this tab open while they join
+                  Keep this tab open · If players see “Sign in to Vercel”, turn off Deployment Protection on Production
                 </p>
               </div>
             </div>
